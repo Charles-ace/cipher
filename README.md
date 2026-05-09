@@ -4,6 +4,10 @@ Cipher Duel is a private two-player strategy game prototype for Arcium-style enc
 
 Players spend 9 hidden points across strike, guard, and focus. Each player seals an encrypted move, then the resolver computes the winner and publishes only the final outcome, score margin, and proof digest.
 
+## Live site (Vercel)
+
+[https://cipher-eight-nu.vercel.app/](https://cipher-eight-nu.vercel.app/)
+
 ## What is included
 
 - Vite + React playable game in [`src`](./src)

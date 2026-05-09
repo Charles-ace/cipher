@@ -3,3 +3,5 @@ dist/
 .netlify/
 .env
 npm-debug.log*
+
+.vercel

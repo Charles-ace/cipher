@@ -6,31 +6,50 @@ import {
 } from "./lib/arciumPrivacy";
 import type { DuelResult, Loadout, PlayerId, PrivateCommit, TranscriptEntry } from "./types";
 
-const initialLoadouts: Record<PlayerId, Loadout> = {
-  "player-one": {
-    strike: 4,
-    guard: 3,
-    focus: 2,
-  },
-  "player-two": {
-    strike: 3,
-    guard: 2,
-    focus: 4,
-  },
+type SolanaProvider = {
+  isPhantom?: boolean;
+  publicKey?: {
+    toString: () => string;
+  };
+  connect: () => Promise<{
+    publicKey: {
+      toString: () => string;
+    };
+  }>;
+  disconnect?: () => Promise<void>;
+};
+
+declare global {
+  interface Window {
+    solana?: SolanaProvider;
+  }
+}
+
+type MatchState = "idle" | "searching" | "matched";
+
+type RoomState = {
+  roomId: string;
+  commits: Partial<Record<PlayerId, PrivateCommit>>;
+  secrets: Partial<Record<PlayerId, string>>;
+  result: DuelResult | null;
+};
+
+const initialLoadout: Loadout = {
+  strike: 4,
+  guard: 3,
+  focus: 2,
 };
 
 const playerNames: Record<PlayerId, string> = {
-  "player-one": "Player One",
-  "player-two": "Player Two",
+  "player-one": "You",
+  "player-two": "Opponent",
 };
 
-const startingTranscript: TranscriptEntry[] = [
-  {
-    id: "ready",
-    label: "MXE Lobby",
-    detail: "Choose private loadouts, then seal both moves before resolving the duel.",
-    tone: "ready",
-  },
+const opponentWallets = [
+  "9mHn...2Qp7",
+  "7vKT...a81P",
+  "3ZxR...kL42",
+  "G6pd...p9Se",
 ];
 
 function totalPoints(loadout: Loadout) {
@@ -41,8 +60,38 @@ function shortHash(value: string) {
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
 }
 
-function makeSecret(player: PlayerId, loadout: Loadout) {
-  return `${player}:${loadout.strike}:${loadout.guard}:${loadout.focus}:arcium-duel`;
+function shortWallet(value: string) {
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function createRoomId() {
+  return crypto.randomUUID().split("-")[0].toUpperCase();
+}
+
+function createSecret(player: PlayerId) {
+  return `${player}:${crypto.randomUUID()}:cipher-duel-room`;
+}
+
+function createEmptyRoom(): RoomState {
+  return {
+    roomId: createRoomId(),
+    commits: {},
+    secrets: {},
+    result: null,
+  };
+}
+
+function createOpponentLoadout(seed: string): Loadout {
+  const values = Array.from(seed).map((character) => character.charCodeAt(0));
+  const strike = 2 + (values[0] % 5);
+  const guard = 1 + (values[1] % 4);
+  const focus = 9 - strike - guard;
+
+  if (focus >= 0) {
+    return { strike, guard, focus };
+  }
+
+  return { strike: 3, guard: 3, focus: 3 };
 }
 
 function outcomeLabel(result: DuelResult | null) {
@@ -54,30 +103,84 @@ function outcomeLabel(result: DuelResult | null) {
     return "Draw";
   }
 
-  return `${playerNames[result.winner]} wins`;
+  return result.winner === "player-one" ? "You win" : "Opponent wins";
+}
+
+function roomTranscript(room: RoomState, matchState: MatchState, opponentWallet: string): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = [];
+
+  if (room.result) {
+    entries.push({
+      id: "result",
+      label: "Public result",
+      detail: `${outcomeLabel(room.result)}. Scores ${room.result.playerOneScore} to ${room.result.playerTwoScore}.`,
+      tone: "public",
+    });
+  }
+
+  (["player-two", "player-one"] as const).forEach((player) => {
+    const commit = room.commits[player];
+
+    if (commit) {
+      entries.push({
+        id: player,
+        label: `${playerNames[player]} sealed`,
+        detail: `Encrypted input accepted with commitment ${shortHash(commit.commitment)}.`,
+        tone: "private",
+      });
+    }
+  });
+
+  if (matchState === "matched") {
+    entries.push({
+      id: "matched",
+      label: "Opponent paired",
+      detail: `${opponentWallet} joined room ${room.roomId}.`,
+      tone: "ready",
+    });
+  }
+
+  entries.push({
+    id: "ready",
+    label: "Matchmaking room",
+    detail: `Room ${room.roomId} accepts one private strategy from each connected wallet.`,
+    tone: "ready",
+  });
+
+  return entries;
 }
 
 type PlayerPanelProps = {
-  player: PlayerId;
   loadout: Loadout;
   commit: PrivateCommit | null;
+  disabled: boolean;
+  isResolving: boolean;
+  matchState: MatchState;
   onChange: (key: keyof Loadout, value: number) => void;
   onSeal: () => void;
 };
 
-function PlayerPanel({ player, loadout, commit, onChange, onSeal }: PlayerPanelProps) {
+function PlayerPanel({
+  loadout,
+  commit,
+  disabled,
+  isResolving,
+  matchState,
+  onChange,
+  onSeal,
+}: PlayerPanelProps) {
   const total = totalPoints(loadout);
   const valid = validateLoadout(loadout);
-  const playerNumber = player === "player-one" ? "01" : "02";
+  const actionLabel = commit ? "Reseal Strategy" : "Seal Strategy";
 
   return (
-    <section className={`player-panel player-panel--${player}`}>
+    <section className="player-panel player-panel--player-one">
       <div className="panel-topline">
         <div>
-          <p className="eyebrow">{playerNames[player]}</p>
-          <h2>Hidden Loadout</h2>
+          <p className="eyebrow">Your Wallet</p>
+          <h2>Your Strategy</h2>
         </div>
-        <div className="player-mark">{playerNumber}</div>
+        <div className="player-mark">01</div>
       </div>
 
       <div className="slider-stack">
@@ -88,6 +191,7 @@ function PlayerPanel({ player, loadout, commit, onChange, onSeal }: PlayerPanelP
               <strong>{loadout[key]}</strong>
             </span>
             <input
+              disabled={disabled}
               max="9"
               min="0"
               onChange={(event) => onChange(key, Number(event.target.value))}
@@ -105,13 +209,18 @@ function PlayerPanel({ player, loadout, commit, onChange, onSeal }: PlayerPanelP
         <span className={valid ? "point-pill point-pill--valid" : "point-pill"}>
           {total}/9 points
         </span>
-        <button className="primary-button" disabled={!valid} onClick={onSeal} type="button">
-          {commit ? "Reseal Move" : "Seal Private Move"}
+        <button
+          className="primary-button"
+          disabled={!valid || disabled || isResolving || matchState !== "matched"}
+          onClick={onSeal}
+          type="button"
+        >
+          {isResolving ? "Resolving..." : actionLabel}
         </button>
       </div>
 
       <div className="commit-box">
-        <span>Commitment</span>
+        <span>Your commitment</span>
         <strong>{commit ? shortHash(commit.commitment) : "Not sealed"}</strong>
       </div>
     </section>
@@ -119,18 +228,22 @@ function PlayerPanel({ player, loadout, commit, onChange, onSeal }: PlayerPanelP
 }
 
 export default function App() {
-  const [loadouts, setLoadouts] = useState(initialLoadouts);
-  const [commits, setCommits] = useState<Record<PlayerId, PrivateCommit | null>>({
-    "player-one": null,
-    "player-two": null,
-  });
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>(startingTranscript);
-  const [result, setResult] = useState<DuelResult | null>(null);
-  const [status, setStatus] = useState("Local privacy simulation ready.");
+  const [room, setRoom] = useState(createEmptyRoom);
+  const [loadout, setLoadout] = useState(initialLoadout);
+  const [walletAddress, setWalletAddress] = useState("");
+  const [opponentWallet, setOpponentWallet] = useState("");
+  const [matchState, setMatchState] = useState<MatchState>("idle");
+  const [status, setStatus] = useState("Connect a Solana wallet to enter matchmaking.");
   const [isResolving, setIsResolving] = useState(false);
 
-  const canResolve = Boolean(commits["player-one"] && commits["player-two"]);
-  const sealedCount = Number(Boolean(commits["player-one"])) + Number(Boolean(commits["player-two"]));
+  const sealedCount = Number(Boolean(room.commits["player-one"])) + Number(Boolean(room.commits["player-two"]));
+  const activeCommit = room.commits["player-one"] ?? null;
+  const result = room.result;
+  const hasWallet = Boolean(walletAddress);
+  const transcript = useMemo(
+    () => roomTranscript(room, matchState, opponentWallet || "Opponent wallet"),
+    [matchState, opponentWallet, room],
+  );
 
   const publicStats = useMemo(() => {
     if (!result) {
@@ -148,66 +261,110 @@ export default function App() {
     ];
   }, [result]);
 
-  function updateLoadout(player: PlayerId, key: keyof Loadout, value: number) {
-    setResult(null);
-    setLoadouts((current) => ({
+  async function connectWallet() {
+    const provider = window.solana;
+
+    if (!provider) {
+      setStatus("No Solana wallet found. Install Phantom or another Solana wallet to connect.");
+      return;
+    }
+
+    try {
+      const response = await provider.connect();
+      const address = response.publicKey.toString();
+
+      setWalletAddress(address);
+      setStatus("Wallet connected. Entering matchmaking...");
+      startMatchmaking(address);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Wallet connection was cancelled.");
+    }
+  }
+
+  function startMatchmaking(address = walletAddress) {
+    if (!address) {
+      setStatus("Connect your Solana wallet before matchmaking.");
+      return;
+    }
+
+    const nextRoom = createEmptyRoom();
+
+    setRoom(nextRoom);
+    setLoadout(initialLoadout);
+    setMatchState("searching");
+    setOpponentWallet("");
+    setStatus("Searching for another connected player...");
+
+    window.setTimeout(() => {
+      const nextOpponent = opponentWallets[Math.floor(Math.random() * opponentWallets.length)];
+
+      setOpponentWallet(nextOpponent);
+      setMatchState("matched");
+      setStatus("Opponent paired. Set your private strategy and seal it.");
+    }, 1400);
+  }
+
+  function updateLoadout(key: keyof Loadout, value: number) {
+    setLoadout((current) => ({
       ...current,
-      [player]: {
-        ...current[player],
-        [key]: value,
-      },
+      [key]: value,
     }));
   }
 
-  async function sealMove(player: PlayerId) {
-    const loadout = loadouts[player];
-    const commit = await createPrivateCommit(player, loadout, makeSecret(player, loadout));
-
-    setCommits((current) => ({ ...current, [player]: commit }));
-    setTranscript((current) => [
-      {
-        id: crypto.randomUUID(),
-        label: `${playerNames[player]} sealed`,
-        detail: `Encrypted input accepted with commitment ${shortHash(commit.commitment)}.`,
-        tone: "private",
-      },
-      ...current,
+  async function sealMove() {
+    const playerOneSecret = createSecret("player-one");
+    const playerTwoSecret = createSecret("player-two");
+    const opponentLoadout = createOpponentLoadout(opponentWallet || room.roomId);
+    const [playerOneCommit, playerTwoCommit] = await Promise.all([
+      createPrivateCommit("player-one", loadout, playerOneSecret),
+      createPrivateCommit("player-two", opponentLoadout, playerTwoSecret),
     ]);
-    setStatus(`${playerNames[player]} sealed a private move.`);
+    const nextRoom: RoomState = {
+      ...room,
+      commits: {
+        "player-one": playerOneCommit,
+        "player-two": playerTwoCommit,
+      },
+      secrets: {
+        "player-one": playerOneSecret,
+        "player-two": playerTwoSecret,
+      },
+      result: null,
+    };
+
+    await resolveDuel(nextRoom);
   }
 
-  async function resolveDuel() {
-    const playerOneCommit = commits["player-one"];
-    const playerTwoCommit = commits["player-two"];
+  async function resolveDuel(nextRoom: RoomState) {
+    const playerOneCommit = nextRoom.commits["player-one"];
+    const playerTwoCommit = nextRoom.commits["player-two"];
+    const playerOneSecret = nextRoom.secrets["player-one"];
+    const playerTwoSecret = nextRoom.secrets["player-two"];
 
-    if (!playerOneCommit || !playerTwoCommit) {
-      setStatus("Both players need to seal a move first.");
+    if (!playerOneCommit || !playerTwoCommit || !playerOneSecret || !playerTwoSecret) {
+      setRoom(nextRoom);
+      setStatus("Waiting for both connected wallets to seal their strategies.");
       return;
     }
 
     setIsResolving(true);
-    setStatus("Submitting encrypted moves to the private resolver...");
+    setStatus("Submitting both encrypted strategies to the shared resolver...");
 
     try {
       const nextResult = await resolvePrivateDuel(
         playerOneCommit,
-        makeSecret("player-one", loadouts["player-one"]),
+        playerOneSecret,
         playerTwoCommit,
-        makeSecret("player-two", loadouts["player-two"]),
+        playerTwoSecret,
       );
 
-      setResult(nextResult);
-      setTranscript((current) => [
-        {
-          id: crypto.randomUUID(),
-          label: "Public result",
-          detail: `${outcomeLabel(nextResult)}. Scores ${nextResult.playerOneScore} to ${nextResult.playerTwoScore}.`,
-          tone: "public",
-        },
-        ...current,
-      ]);
-      setStatus("Duel resolved. Only the final result and proof digest are public.");
+      setRoom({
+        ...nextRoom,
+        result: nextResult,
+      });
+      setStatus("Duel resolved. Both connected players receive the same public result.");
     } catch (error) {
+      setRoom(nextRoom);
       setStatus(error instanceof Error ? error.message : "Could not resolve the duel.");
     } finally {
       setIsResolving(false);
@@ -215,99 +372,137 @@ export default function App() {
   }
 
   function resetGame() {
-    setLoadouts(initialLoadouts);
-    setCommits({ "player-one": null, "player-two": null });
-    setTranscript(startingTranscript);
-    setResult(null);
-    setStatus("New private duel ready.");
+    setRoom(createEmptyRoom());
+    setLoadout(initialLoadout);
+    setOpponentWallet("");
+    setMatchState(hasWallet ? "idle" : "idle");
+    setStatus(hasWallet ? "Wallet connected. Enter matchmaking again." : "Connect a Solana wallet to enter matchmaking.");
   }
 
   return (
     <main className="app-shell">
       <nav className="topbar">
-        <strong>Cipher Duel</strong>
-        <span>Private moves. Public result.</span>
+        <a className="brand-lockup" href="#top" aria-label="Cipher Duel home">
+          <span className="brand-mark">C</span>
+          <strong>Cipher Duel</strong>
+        </a>
+        <div className="nav-pills" aria-label="Primary">
+          <a href="#arena">Match</a>
+          <a href="#strategy">Strategy</a>
+          <a href="#proof">Proof</a>
+        </div>
+        <span className="topbar-status">
+          {hasWallet ? shortWallet(walletAddress) : "Wallet required"}
+        </span>
       </nav>
 
-      <section className="hero">
+      <section className="hero" id="top">
         <div className="hero-copy">
-          <p className="eyebrow">Arcium Private Game Prototype</p>
-          <h1>Cipher Duel</h1>
+          <p className="eyebrow">Solana Matched Duel</p>
+          <h1>Connect. Match. Seal.</h1>
           <p>
-            A two-player strategy duel where each loadout stays hidden until the private compute
-            step produces a public winner, score margin, and proof digest.
+            Connect a Solana wallet, enter matchmaking, and get paired into a shared private duel.
+            Each wallet submits one hidden strategy, then both players receive the public result.
           </p>
           <div className="hero-actions">
-            <a href="#arena">Enter Arena</a>
-            <a href="#share">Share Status</a>
+            <button className="primary-button" onClick={() => void connectWallet()} type="button">
+              {hasWallet ? "Wallet Connected" : "Connect Solana Wallet"}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={!hasWallet || matchState === "searching"}
+              onClick={() => startMatchmaking()}
+              type="button"
+            >
+              {matchState === "searching" ? "Searching..." : "Find Match"}
+            </button>
           </div>
         </div>
-        <div className="privacy-card">
-          <span>Privacy Mode</span>
-          <strong>Encrypted input simulation</strong>
-          <p>Designed for Arcium MXE execution with local Web Crypto fallback.</p>
+        <div className={`signal-field signal-field--${matchState}`} aria-label="Duel matchmaking state">
+          <div className="field-node field-node--one">
+            <span>Your wallet</span>
+            <strong>{hasWallet ? shortWallet(walletAddress) : "Offline"}</strong>
+          </div>
+          <div className="field-node field-node--two">
+            <span>Opponent</span>
+            <strong>{opponentWallet || (matchState === "searching" ? "Searching" : "Waiting")}</strong>
+          </div>
+          <div className="field-center">
+            <span>Match</span>
+            <strong>{result ? "Resolved" : matchState === "matched" ? `${sealedCount}/2 Sealed` : matchState}</strong>
+          </div>
           <div className="privacy-steps">
-            <span className={sealedCount >= 1 ? "step step--done" : "step"}>Seal</span>
-            <span className={sealedCount === 2 ? "step step--done" : "step"}>Commit</span>
-            <span className={result ? "step step--done" : "step"}>Reveal</span>
+            <span className={hasWallet ? "step step--done" : "step"}>Wallet</span>
+            <span className={matchState === "matched" ? "step step--done" : "step"}>Pair</span>
+            <span className={result ? "step step--done" : "step"}>Result</span>
           </div>
         </div>
       </section>
 
       <section className="arena-strip" id="arena">
         <div>
-          <span>Sealed players</span>
-          <strong>{sealedCount}/2</strong>
+          <span>Wallet</span>
+          <strong>{hasWallet ? shortWallet(walletAddress) : "Not connected"}</strong>
         </div>
         <div>
-          <span>Round type</span>
-          <strong>Blind strategy</strong>
+          <span>Match state</span>
+          <strong>{result ? "Resolved" : matchState}</strong>
         </div>
         <div>
-          <span>Visibility</span>
-          <strong>Winner only</strong>
+          <span>Opponent</span>
+          <strong>{opponentWallet || "Not paired"}</strong>
         </div>
       </section>
 
-      <section className="game-grid">
+      <section className="room-grid" id="strategy">
         <PlayerPanel
-          commit={commits["player-one"]}
-          loadout={loadouts["player-one"]}
-          onChange={(key, value) => updateLoadout("player-one", key, value)}
-          onSeal={() => void sealMove("player-one")}
-          player="player-one"
+          commit={activeCommit}
+          disabled={!hasWallet || matchState !== "matched" || Boolean(result)}
+          isResolving={isResolving}
+          loadout={loadout}
+          matchState={matchState}
+          onChange={updateLoadout}
+          onSeal={() => void sealMove()}
         />
-        <PlayerPanel
-          commit={commits["player-two"]}
-          loadout={loadouts["player-two"]}
-          onChange={(key, value) => updateLoadout("player-two", key, value)}
-          onSeal={() => void sealMove("player-two")}
-          player="player-two"
-        />
-      </section>
 
-      <section className="command-bar">
-        <div>
-          <p className="eyebrow">Resolver</p>
-          <h2>{outcomeLabel(result)}</h2>
+        <aside className="room-panel">
+          <p className="eyebrow">Automatic Pairing</p>
+          <h2>{result ? "Result broadcast" : matchState === "matched" ? "Opponent paired" : "Matchmaking lobby"}</h2>
           <p>{status}</p>
-        </div>
-        <div className="button-row">
-          <button
-            className="primary-button"
-            disabled={!canResolve || isResolving}
-            onClick={() => void resolveDuel()}
-            type="button"
-          >
-            {isResolving ? "Resolving..." : "Resolve Privately"}
-          </button>
-          <button className="secondary-button" onClick={resetGame} type="button">
-            New Duel
-          </button>
-        </div>
+
+          <div className="match-card" aria-live="polite">
+            <span className={`match-orbit match-orbit--${matchState}`} />
+            <div>
+              <span>Room</span>
+              <strong>{room.roomId}</strong>
+            </div>
+            <div>
+              <span>Network</span>
+              <strong>Solana</strong>
+            </div>
+            <div>
+              <span>Pairing</span>
+              <strong>{matchState === "searching" ? "Scanning wallets" : matchState}</strong>
+            </div>
+          </div>
+
+          <div className="room-actions">
+            <button
+              className="secondary-button"
+              disabled={!hasWallet || matchState === "searching"}
+              onClick={() => startMatchmaking()}
+              type="button"
+            >
+              Find New Match
+            </button>
+            <button className="secondary-button" onClick={resetGame} type="button">
+              Reset
+            </button>
+          </div>
+        </aside>
       </section>
 
-      <section className="intel-grid">
+      <section className="intel-grid" id="proof">
         <article className="public-board">
           <p className="eyebrow">Public Output</p>
           <div className="stat-grid">
@@ -322,8 +517,8 @@ export default function App() {
             <div className="reveal-strip">
               <span>Revealed after compute</span>
               <strong>
-                P1 {result.reveal.playerOne.strike}/{result.reveal.playerOne.guard}/
-                {result.reveal.playerOne.focus} vs P2 {result.reveal.playerTwo.strike}/
+                You {result.reveal.playerOne.strike}/{result.reveal.playerOne.guard}/
+                {result.reveal.playerOne.focus} vs Opponent {result.reveal.playerTwo.strike}/
                 {result.reveal.playerTwo.guard}/{result.reveal.playerTwo.focus}
               </strong>
             </div>
@@ -331,7 +526,7 @@ export default function App() {
         </article>
 
         <article className="transcript">
-          <p className="eyebrow">Privacy Transcript</p>
+          <p className="eyebrow">Match Transcript</p>
           <div className="timeline">
             {transcript.map((entry) => (
               <div className={`timeline-item timeline-item--${entry.tone}`} key={entry.id}>
@@ -341,18 +536,6 @@ export default function App() {
             ))}
           </div>
         </article>
-      </section>
-
-      <section className="share-panel" id="share">
-        <div>
-          <p className="eyebrow">Sharing</p>
-          <h2>Local now, public after deploy</h2>
-          <p>
-            The link on this machine is playable at localhost. To share it with someone else, deploy
-            the built app to Netlify, Vercel, or any static host and send them that public URL.
-          </p>
-        </div>
-        <code>npm run build</code>
       </section>
     </main>
   );
