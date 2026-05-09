@@ -394,7 +394,6 @@ h2 {
 .privacy-card span,
 .commit-box span,
 .stat-tile span,
-.reveal-strip span,
 .timeline-item span,
 .arena-strip span {
   display: block;
@@ -408,7 +407,6 @@ h2 {
 .field-center strong,
 .commit-box strong,
 .stat-tile strong,
-.reveal-strip strong,
 .arena-strip strong {
   display: block;
   margin-top: 6px;
@@ -509,8 +507,7 @@ h2 {
 
 .panel-topline,
 .command-bar,
-.stat-control span,
-.reveal-strip {
+.stat-control span {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -656,11 +653,119 @@ input[type="range"] {
   font-size: 1.08rem;
 }
 
-.reveal-strip {
-  margin-top: 16px;
-  padding: 15px;
-  border-radius: 14px;
-  background: rgba(239, 255, 167, 0.1);
+@keyframes confetti-fall {
+  0% {
+    transform: translate3d(var(--confetti-drift, 0px), -24px, 0) rotate(0deg);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate3d(calc(var(--confetti-drift, 0px) * -0.35), 110vh, 0) rotate(3turn);
+    opacity: 0.92;
+  }
+}
+
+.outcome-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  z-index: 2147483000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border: none;
+  background: transparent;
+  isolation: isolate;
+  pointer-events: auto;
+}
+
+.outcome-overlay__scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(5, 6, 6, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.outcome-overlay--win .outcome-overlay__scrim {
+  background: radial-gradient(ellipse at 50% 30%, rgba(185, 248, 210, 0.35), rgba(5, 6, 6, 0.88));
+}
+
+.outcome-overlay--lose .outcome-overlay__scrim {
+  background: radial-gradient(ellipse at 50% 28%, rgba(255, 158, 184, 0.22), rgba(5, 6, 6, 0.9));
+}
+
+.outcome-overlay--draw .outcome-overlay__scrim {
+  background: radial-gradient(ellipse at 50% 28%, rgba(255, 227, 155, 0.2), rgba(5, 6, 6, 0.88));
+}
+
+.confetti-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.confetti-piece {
+  position: absolute;
+  top: -28px;
+  width: 11px;
+  height: 18px;
+  border-radius: 2px;
+  opacity: 1;
+  animation-name: confetti-fall;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  will-change: transform;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.outcome-overlay__card {
+  position: relative;
+  z-index: 2;
+  max-width: 420px;
+  width: 100%;
+  padding: 40px 32px 36px;
+  border-radius: 22px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.outcome-overlay__emoji {
+  font-size: 4rem;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+
+.outcome-overlay__title {
+  margin: 0 0 28px;
+  font-size: clamp(2rem, 6vw, 2.75rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.outcome-overlay--win .outcome-overlay__title {
+  color: var(--mint);
+}
+
+.outcome-overlay--lose .outcome-overlay__title {
+  color: var(--rose);
+}
+
+.outcome-overlay--draw .outcome-overlay__title {
+  color: var(--amber);
+}
+
+.outcome-overlay__dismiss {
+  width: 100%;
+  max-width: 280px;
 }
 
 .timeline {
@@ -939,7 +1044,6 @@ input[type="range"] {
   }
 
   .panel-topline,
-  .reveal-strip,
   .button-row,
   .player-actions {
     align-items: stretch;

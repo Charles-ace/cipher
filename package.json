@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test:e2e": "playwright test",
     "preview": "vite preview",
     "netlify:dev": "netlify dev"
   },
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@netlify/functions": "^5.1.5",
+    "@playwright/test": "^1.50.1",
     "@types/node": "^25.5.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

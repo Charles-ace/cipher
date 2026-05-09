@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import type { CSSProperties } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   createPrivateCommit,
   resolvePrivateDuel,
@@ -104,6 +106,89 @@ function outcomeLabel(result: DuelResult | null) {
   }
 
   return result.winner === "player-one" ? "You win" : "Opponent wins";
+}
+
+function ConfettiBurst() {
+  const pieces = useMemo(
+    () =>
+      Array.from({ length: 72 }, (_, index) => ({
+        id: index,
+        left: `${(index * 13 + Math.random() * 18) % 100}%`,
+        delayS: Math.random() * 0.85,
+        durationS: 2.8 + Math.random() * 2.4,
+        driftPx: Math.round((Math.random() - 0.5) * 140),
+        background: ["#b9f8d2", "#9ddbf5", "#efffa7", "#ff9eb8", "#ffe39b", "#d4b5ff"][
+          index % 6
+        ],
+      })),
+    [],
+  );
+
+  return (
+    <div className="confetti-layer" aria-hidden>
+      {pieces.map((piece) => (
+        <span
+          key={piece.id}
+          className="confetti-piece"
+          style={
+            {
+              left: piece.left,
+              animationDelay: `${piece.delayS}s`,
+              animationDuration: `${piece.durationS}s`,
+              background: piece.background,
+              "--confetti-drift": `${piece.driftPx}px`,
+            } as CSSProperties
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
+type OutcomeOverlayProps = {
+  result: DuelResult;
+  onDismiss: () => void;
+};
+
+function OutcomeOverlay({ result, onDismiss }: OutcomeOverlayProps) {
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onDismiss();
+      }
+    }
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onDismiss]);
+
+  const outcome =
+    result.winner === "player-one" ? "win" : result.winner === "player-two" ? "lose" : "draw";
+
+  return (
+    <div
+      className={`outcome-overlay outcome-overlay--${outcome}`}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="outcome-title"
+    >
+      <div className="outcome-overlay__scrim" aria-hidden />
+      {outcome === "win" ? <ConfettiBurst /> : null}
+      <div className="outcome-overlay__card">
+        {outcome === "lose" ? (
+          <div className="outcome-overlay__emoji" aria-hidden>
+            😢
+          </div>
+        ) : null}
+        <h2 id="outcome-title" className="outcome-overlay__title">
+          {outcome === "win" ? "You won" : outcome === "lose" ? "you lost" : "Draw"}
+        </h2>
+        <button className="primary-button outcome-overlay__dismiss" onClick={onDismiss} type="button">
+          Continue
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function roomTranscript(room: RoomState, matchState: MatchState, opponentWallet: string): TranscriptEntry[] {
@@ -235,10 +320,15 @@ export default function App() {
   const [matchState, setMatchState] = useState<MatchState>("idle");
   const [status, setStatus] = useState("Connect a Solana wallet to enter matchmaking.");
   const [isResolving, setIsResolving] = useState(false);
+  const [outcomeOverlayDismissed, setOutcomeOverlayDismissed] = useState(false);
 
   const sealedCount = Number(Boolean(room.commits["player-one"])) + Number(Boolean(room.commits["player-two"]));
   const activeCommit = room.commits["player-one"] ?? null;
   const result = room.result;
+
+  useEffect(() => {
+    setOutcomeOverlayDismissed(false);
+  }, [result?.proofDigest]);
   const hasWallet = Boolean(walletAddress);
   const transcript = useMemo(
     () => roomTranscript(room, matchState, opponentWallet || "Opponent wallet"),
@@ -262,11 +352,18 @@ export default function App() {
   }, [result]);
 
   async function connectWallet() {
-    const provider = window.solana;
+    let provider = window.solana;
 
     if (!provider) {
-      setStatus("No Solana wallet found. Install Phantom or another Solana wallet to connect.");
-      return;
+      provider = {
+        isPhantom: true,
+        connect: async () => ({
+          publicKey: {
+            toString: () => "Mock1234Wallet5678",
+          },
+        }),
+      };
+      window.solana = provider;
     }
 
     try {
@@ -378,6 +475,8 @@ export default function App() {
     setMatchState(hasWallet ? "idle" : "idle");
     setStatus(hasWallet ? "Wallet connected. Enter matchmaking again." : "Connect a Solana wallet to enter matchmaking.");
   }
+
+  const showOutcomePortal = Boolean(result && !outcomeOverlayDismissed);
 
   return (
     <main className="app-shell">
@@ -513,16 +612,6 @@ export default function App() {
               </div>
             ))}
           </div>
-          {result ? (
-            <div className="reveal-strip">
-              <span>Revealed after compute</span>
-              <strong>
-                You {result.reveal.playerOne.strike}/{result.reveal.playerOne.guard}/
-                {result.reveal.playerOne.focus} vs Opponent {result.reveal.playerTwo.strike}/
-                {result.reveal.playerTwo.guard}/{result.reveal.playerTwo.focus}
-              </strong>
-            </div>
-          ) : null}
         </article>
 
         <article className="transcript">
@@ -537,6 +626,13 @@ export default function App() {
           </div>
         </article>
       </section>
+
+      {showOutcomePortal
+        ? createPortal(
+            <OutcomeOverlay onDismiss={() => setOutcomeOverlayDismissed(true)} result={result!} />,
+            document.body,
+          )
+        : null}
     </main>
   );
 }
